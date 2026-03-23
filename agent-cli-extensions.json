@@ -1,0 +1,212 @@
+{
+  "prompt_type": "agent-cli-extensions.json",
+  "goal": "Generate a production-ready, agent-safe Python CLI optimized for both human operators and autonomous LLM agents. The CLI must be safe under unbounded scale, support predictable latency, and provide structured, machine-readable output.",
+
+  "core_principles": {
+    "agent_efficiency": [
+      "Minimize tokens → short, predictable verbs + flags",
+      "Stable, parseable stdout (JSON when --json)",
+      "Explicit targets only — no implicit context",
+      "Prefer partial, fast results over slow completeness",
+      "Deterministic output shapes for agent loops"
+    ],
+    "safety_priorities": [
+      "Show scope & target BEFORE any mutation",
+      "Require confirmation for destructive/high-risk actions",
+      "Support --dry-run / --preview for all mutations",
+      "Bound all operations (time, depth, count)",
+      "Never assume safe scale — enforce limits",
+      "Credential hygiene: no secrets via CLI args"
+    ],
+    "execution_model": [
+      "Prefer two-phase execution: discover → (optional) enrich",
+      "Support fast mode (skip expensive per-item work)",
+      "Allow early exit with partial results",
+      "Operations must be interruptible and resumable where possible"
+    ],
+    "output_contract": {
+      "modes": ["human-pretty", "json-machine"],
+      "human": "Use rich-like tables, colors, progress indicators",
+      "json": "Stable schema, no ANSI, deterministic ordering",
+      "errors": "{ \"ok\": false, \"error\": \"…\", \"code\": \"…\", \"hint\": \"…\", \"details\": {} }",
+      "partial_results": "{ \"ok\": true, \"data\": [...], \"truncated\": true, \"limit\": N }"
+    }
+  },
+
+  "mandatory_cli_shape": {
+    "global_flags": [
+      {
+        "name": "--profile",
+        "type": "str | None",
+        "env_fallback": "CLI_PROFILE"
+      },
+      {
+        "name": "--account",
+        "type": "str | None",
+        "required_for_mutation": true
+      },
+      {
+        "name": "--provider",
+        "type": "str",
+        "default": "local"
+      },
+      {
+        "name": "--json",
+        "type": "flag"
+      },
+      {
+        "name": "--pretty-json",
+        "type": "flag"
+      },
+      {
+        "name": "--show-scope",
+        "type": "flag",
+        "default": true
+      }
+    ],
+    "callback_behavior": {
+      "on_start": "Print scope (profile • account • provider) if --show-scope"
+    }
+  },
+
+  "query_safety": {
+    "must_support": [
+      "--limit",
+      "--timeout-sec"
+    ],
+    "recommended": [
+      "--max-depth",
+      "--fast",
+      "--page",
+      "--page-size"
+    ],
+    "rules": [
+      "Avoid unbounded scans by default",
+      "Default limit must be finite (e.g., 1000)",
+      "Return partial results when limits/timeouts hit",
+      "Expose truncation explicitly in output",
+      "Warn when scope is large or unknown",
+      "Prefer fast discovery over full enrichment"
+    ],
+    "cost_signaling": [
+      "Estimate or hint scope size when possible",
+      "Warn on high-cost operations before execution",
+      "Suggest flags to reduce scope (--limit, --max-depth, filters)"
+    ]
+  },
+
+  "command_patterns": {
+    "query_commands": {
+      "characteristics": "read-only, idempotent, safe for agents",
+      "examples": ["ls", "get", "list", "describe", "search", "status"],
+      "account_optional": true,
+      "behavior": [
+        "Support bounded execution via query_safety flags",
+        "Prefer fast mode by default",
+        "Return partial results if needed",
+        "Avoid expensive per-item operations unless requested"
+      ]
+    },
+
+    "mutation_commands": {
+      "characteristics": "create/update/delete/bulk",
+      "must_include": ["--dry-run"],
+      "risk_level": "high|medium|low",
+      "rules": [
+        "Always show scope before execution",
+        "Preview affected targets before mutation",
+        "If --dry-run → exit with preview (code 200)",
+        "If risk_level=high → require confirmation unless --yes",
+        "If risk_level=medium → confirmation recommended",
+        "If risk_level=low → no confirmation required"
+      ],
+      "example_flow": [
+        "Show scope",
+        "Resolve targets",
+        "Preview impact",
+        "Optional confirm",
+        "Execute",
+        "Return structured result"
+      ]
+    }
+  },
+
+  "error_handling_contract": {
+    "exit_codes": {
+      "0": "success",
+      "1": "generic failure",
+      "2": "not found / invalid target",
+      "3": "permission denied / auth failed",
+      "4": "validation error",
+      "5": "conflict",
+      "130": "keyboard interrupt",
+      "200": "dry-run success",
+      "206": "partial success (truncated)"
+    },
+    "json_error_shape": {
+      "ok": false,
+      "error": "message",
+      "code": "ENUM",
+      "hint": "recovery advice",
+      "details": {}
+    }
+  },
+
+  "performance_guidelines": [
+    "Avoid expensive syscalls in tight loops unless required",
+    "Batch operations where possible",
+    "Prefer streaming over full materialization",
+    "Avoid N+1 patterns (API, FS, DB)",
+    "Support fast mode to skip enrichment"
+  ],
+
+  "default_heuristics": {
+    "filesystem": [
+      "Ignore .git, .cache, node_modules, __pycache__ by default",
+      "Warn when scanning home directory or root",
+      "Encourage depth limits"
+    ],
+    "api": [
+      "Default to pagination",
+      "Avoid fetching all pages unless explicitly requested"
+    ],
+    "database": [
+      "Avoid full table scans",
+      "Require limit unless explicitly overridden"
+    ]
+  },
+
+  "library_preference_order_2026": [
+    "clypi",
+    "typer",
+    "click",
+    "argparse"
+  ],
+
+  "generation_constraints": {
+    "do_not": [
+      "unbounded queries by default",
+      "implicit context assumptions",
+      "secrets in arguments",
+      "blocking full scans without limits"
+    ],
+    "always": [
+      "bounded execution",
+      "structured JSON option",
+      "partial result support",
+      "clear error + hint messages",
+      "predictable latency"
+    ]
+  },
+
+  "output_format": {
+    "type": "single_file",
+    "filename": "cli.py",
+    "shebang": "#!/usr/bin/env python3",
+    "includes": [
+      "main entrypoint",
+      "exception handling",
+      "KeyboardInterrupt → exit 130"
+    ]
+  }
+}
