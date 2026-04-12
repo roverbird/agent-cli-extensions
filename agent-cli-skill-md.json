@@ -1,0 +1,43 @@
+{
+  "prompt_type": "agent-cli-extensions-v2.json",
+  "goal": "Generate a production-ready Python CLI and a corresponding SKILL.md for ZeroClaw agents.",
+  
+  "skill_documentation_contract": {
+    "filename": "SKILL.md",
+    "required_sections": [
+      {
+        "section": "Header",
+        "format": "# SKILL: {skill_name}"
+      },
+      {
+        "section": "Purpose",
+        "content": "Detailed explanation of when the agent SHOULD and SHOULD NOT use this tool. Explicitly define the 'vibe' and context (e.g., professional vs. philosophical)."
+      },
+      {
+        "section": "Command",
+        "format": "python3 -u skills/{skill_name}/{skill_name}.py status --json"
+      },
+      {
+        "section": "Parameters",
+        "description": "Table of flags supported by the CLI and their impact on agent context."
+      },
+      {
+        "section": "Output Handling",
+        "description": "Instructions for the LLM on how to interpret JSON vs Human output."
+      }
+    ],
+    "integration_rules": [
+      "If --json is used, the agent must parse the 'text' or 'data' field and integrate it into a natural response.",
+      "The agent must never expose the raw JSON output to the end user.",
+      "The agent must respect the 'sentiment' field to match the user's emotional state."
+    ]
+  },
+
+  "core_principles": {
+    "context_hygiene": [
+      "Skills must not leak into the global context unless explicitly triggered.",
+      "Prefer ephemeral tool calls over permanent memory bloating.",
+      "Standardized 'quiet' mode for autonomous execution."
+    ]
+  }
+}

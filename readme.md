@@ -1,3 +1,19 @@
+# ZeroClaw Agent Playground
+
+This repo contains instructions and AI JSON prompts specifications for ZC skills with a ZC deployed on a headless Debian server; it contans working examples for creating ZC skills. Work in progress.
+
+## What is ZeroClaw?
+
+> [ZeroClaw](https://zeroclaw.net/) is a highly efficient, Rust-based alternative to the OpenClaw agent runtime. Designed to address the resource intensity and performance bottlenecks of existing solutions, ZeroClaw offers a radically optimized environment for running autonomous AI agents.
+
+Creating custom skills for AI agents can be tricky. Zeroclaw has some features, that should be taken into account. Skill project structure: `SKILL.md`, `SKILL.toml`, `skill_cli.py`. Must edit `config.toml` in `workplace` and also `TOOLS.md`. AI Prompt to make this easier is in `zeroclaw-skill-specifications.json`.
+
+## Skills so far:
+ 
+- Himalaya Mail CLI wrapper
+
+---
+
 # Agent CLI Extensions
 
 Agent CLI Extensions for _AI Agent safety_ provides minimal guidelines for designing command-line interfaces (CLI) that can be securely and efficiently used by AI agents. These CLIs are deliberately constrained to be predictable, bounded, and machine-readable.
@@ -13,6 +29,8 @@ This approach has two primary goals. First, it reduces security risk by enforcin
 The CLI is an execution surface for agents. Commands return predictable outputs, operate within defined bounds, and expose clear failure modes. This ensures controlled behavior, consistent outcomes, and reliable integration with automated workflows.
 
 The CLI is a read-only interface for the agent and must not be modified by the agent. The agent may perform mutations only on external targets under explicit scope (--account, --profile, --limit) and never on the CLI code, spec, or configuration that defines its safe boundaries. The CLI and its spec must be protected by read-only file permissions, and the agent must runs under a separate user account with no write access to the CLI directory. This ensures the agent can execute the CLI safely but cannot modify its code, spec, or configuration.
+
+---
 
 ## Key Properties of an Agent-Safe CLI
 
@@ -36,7 +54,7 @@ The CLI is a read-only interface for the agent and must not be modified by the a
 - no silent destructive actions
 - OpenCLI + x-agent means safe execution contract
 
-This repository contains a minimal extension specification, a simple example, a reference generator prompt, and a working CLI implementation that demonstrates the pattern.
+A minimal extension specification is in `agent-cli-extensions.json`
 
 Inspired by "Security and Efficieny for Agents" Talk by Andreas Petersson at 2026-03-21 [Decentralized AI Day](https://luma.com/sb1g8oyb) (Vienna), his original presentation available [here](https://drive.google.com/file/d/1maQ5UjdbmoXC8R1yvYKUGxAUNcD8xzFR/view)
 

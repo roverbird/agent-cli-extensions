@@ -1,0 +1,10 @@
+[skill]
+name        = "email"
+description = "Himalaya CLI wrapper for hello@domain.com"
+version     = "5.0.0"
+
+[[tools]]
+name        = "list_mail"
+description = "List the 5 most recent emails. Returns ID, subject, sender. No arguments needed."
+kind        = "shell"
+command     = "python3 -u skills/email/himalaya_wrapper.py list"

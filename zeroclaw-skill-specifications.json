@@ -1,0 +1,166 @@
+{
+  "meta": {
+    "title": "ZeroClaw Skill Authoring Specification",
+    "version": "2.0.0",
+    "derived_from": "email skill (himalaya wrapper) — March 2026",
+    "purpose": "Prompt spec for AI-assisted authoring of ZeroClaw skills. Contains all constraints, patterns, and workarounds confirmed through live debugging. Use this as a system prompt or context when writing a new skill."
+  },
+
+  "zeroclaw_skill_architecture": {
+    "summary": "A ZeroClaw skill is a directory under ~/.zeroclaw/workspace/skills/<skill-name>/ containing SKILL.toml and SKILL.md. SKILL.toml takes precedence if both exist. The agent sees only a compact skill list (name, description, path) in its system prompt — it does NOT see SKILL.md content automatically.",
+    "critical_constraints": [
+      "[[tools]] entries in SKILL.toml are injected into the agent system prompt as XML stubs only. They are NOT registered as callable tool specs via the provider API. The agent can call them by name but no argument substitution occurs.",
+      "ZeroClaw does NOT perform argument substitution at tool dispatch time. Placeholders like {0}, {args}, {to} are passed as literal strings to the shell command — confirmed broken.",
+      "Shell redirection operators (>, >>, |) are blocked by security policy even when the underlying commands are in allowed_commands.",
+      "Inline environment variable syntax (KEY=value command) is also blocked — the security policy requires the command to start with a whitelisted command name.",
+      "The workspace lives under /home/<user>/.zeroclaw/workspace/. The /home path is in forbidden_paths by default, blocking file writes unless allowed_roots is configured.",
+      "The agent cannot append flags or arguments to a registered tool command. The command string in SKILL.toml is always executed exactly as written, with nothing appended.",
+      "SKILL.md content is NOT injected automatically into the system prompt. The agent must explicitly read the skill file to see it, which it will not do unprompted.",
+      "The only file always injected into the system prompt is ~/.zeroclaw/workspace/TOOLS.md. This is where actionable shell instructions must live."
+    ]
+  },
+
+  "architecture_decision": {
+    "summary": "Given the constraints above, the correct architecture for any skill requiring arguments is:",
+    "pattern": "ONE registered no-arg skill tool (for listing/status) + shell tool calls documented in TOOLS.md (for all parameterized operations)",
+    "rationale": [
+      "Registered skill tools only work reliably when they require zero arguments.",
+      "Parameterized operations (read, send, create, delete) must be invoked via the built-in shell tool using positional sys.argv arguments.",
+      "The Python wrapper handles all logic. The agent constructs shell commands from TOOLS.md instructions.",
+      "TOOLS.md is the only reliable channel for getting instructions into every agent turn."
+    ]
+  },
+
+  "py_wrapper_rules": {
+    "summary": "The Python wrapper is the sole execution engine. It receives all parameters as positional sys.argv arguments. No state files, no env vars, no flags.",
+    "entry_point_structure": {
+      "argv_1": "Subcommand: 'list', 'read', 'send', or other operation names",
+      "argv_2+": "Positional parameters in a fixed order documented in TOOLS.md"
+    },
+    "example_dispatch": [
+      "python3 wrapper.py list",
+      "python3 wrapper.py read 17",
+      "python3 wrapper.py send a@b.com \"Subject\" \"Body text\""
+    ],
+    "rules": [
+      "Accept all parameters as positional sys.argv — no argparse flags, no env vars, no state files.",
+      "Validate argument count early and return a clear STATUS: Failed message with correct usage if args are missing.",
+      "Every code path must print a STATUS: line as the first output token so the agent can detect success or failure.",
+      "Silence noisy CLI output by setting environment variables before subprocess calls (e.g. os.environ['TOOL_LOG'] = 'off').",
+      "Always capture stderr separately using capture_output=True. Surface stderr in the return value when returncode != 0.",
+      "Use python3, not python, in all commands — python may not be on PATH.",
+      "Use subprocess.Popen with stdin=subprocess.PIPE for commands that require piped stdin input.",
+      "Use shlex.split() when splitting fixed command strings to handle quoting correctly.",
+      "Use os.path.dirname(os.path.abspath(__file__)) for any file paths relative to the skill directory — never use relative paths, as the shell tool and skill tool may run from different working directories."
+    ],
+    "status_line_conventions": {
+      "success": "STATUS: Success. <description>",
+      "failure": "STATUS: Failed. <exact reason and correct usage>",
+      "warning": "STATUS: Warning. <description of partial result>"
+    },
+    "template": "import subprocess, shlex, sys, os\n\nos.environ['TOOL_LOG'] = 'off'\nSKILL_DIR = os.path.dirname(os.path.abspath(__file__))\n\n\ndef _run(cmd):\n    result = subprocess.run(cmd, shell=True, text=True, capture_output=True, env=os.environ)\n    if result.returncode != 0 and result.stderr.strip():\n        return f'CLI ERROR (exit {result.returncode}): {result.stderr.strip()}'\n    return result.stdout\n\n\ndef do_list():\n    # implement listing logic\n    return 'STATUS: Success. <results>'\n\n\ndef do_read(item_id):\n    # implement read logic\n    return f'STATUS: Success. CONTENT OF {item_id}:\\n\\n<body>'\n\n\ndef do_send(to, subject, body):\n    # implement send/create logic\n    return f'STATUS: Success. Sent to {to}.'\n\n\ncmd = sys.argv[1] if len(sys.argv) > 1 else 'list'\n\nif cmd == 'list':\n    print(do_list())\n\nelif cmd == 'read':\n    if len(sys.argv) < 3:\n        print('STATUS: Failed. Usage: wrapper.py read <id>')\n        sys.exit(1)\n    print(do_read(sys.argv[2]))\n\nelif cmd == 'send':\n    if len(sys.argv) < 5:\n        print('STATUS: Failed. Usage: wrapper.py send <to> <subject> <body>')\n        sys.exit(1)\n    print(do_send(sys.argv[2], sys.argv[3], sys.argv[4]))\n\nelse:\n    print(f'STATUS: Failed. Unknown command: {cmd}. Use: list | read <id> | send <to> <subject> <body>')\n    sys.exit(1)"
+  },
+
+  "SKILL_toml_rules": {
+    "summary": "SKILL.toml registers the skill and declares only the zero-argument tool(s). All parameterized operations are handled via shell tool calls documented in TOOLS.md, not via registered tools.",
+    "required_fields": {
+      "skill.name": "Unique identifier, lowercase, no spaces",
+      "skill.description": "One line description",
+      "skill.version": "Semver string",
+      "tools[].name": "Tool name the agent will call (e.g. list_mail)",
+      "tools[].description": "Brief description — the agent sees this in the compact skill list",
+      "tools[].kind": "Always 'shell'",
+      "tools[].command": "Exact fixed command string starting with python3. No placeholders."
+    },
+    "do_not": [
+      "Do not use {0}, {args}, {name}, or any placeholder — confirmed non-functional, passed as literal strings.",
+      "Do not register read/send/delete/create tools — they require arguments that cannot be passed at dispatch time.",
+      "Do not remove all [[tools]] blocks — without at least one, the skill fails to register entirely and the agent reports 'Unknown tool: <skill>'.",
+      "Do not rely on SKILL.md to convey operational instructions — the agent does not read it automatically."
+    ],
+    "minimal_template": "[skill]\nname        = \"<skill-name>\"\ndescription = \"<one line description>\"\nversion     = \"1.0.0\"\n\n[[tools]]\nname        = \"<skill>_list\"\ndescription = \"List recent <items>. No arguments needed.\"\nkind        = \"shell\"\ncommand     = \"python3 -u skills/<skill-name>/wrapper.py list\""
+  },
+
+  "SKILL_md_rules": {
+    "summary": "SKILL.md is NOT automatically shown to the agent. Write it as human-readable documentation for your own reference. Operational instructions for the agent must go in TOOLS.md instead.",
+    "recommended_sections": [
+      "Description of what the skill does and what CLI tool it wraps",
+      "Wrapper argument reference: all subcommands and their argv layout",
+      "config.toml requirements (allowed_commands, allowed_roots)",
+      "Troubleshooting / STATUS line reference table"
+    ],
+    "note": "Do not invest effort making SKILL.md agent-facing. The agent will not read it unless explicitly instructed to in a user prompt. Treat it as a README for yourself."
+  },
+
+  "TOOLS_md_rules": {
+    "summary": "TOOLS.md lives at ~/.zeroclaw/workspace/TOOLS.md and is injected into every agent system prompt. This is the ONLY reliable place to put instructions the agent will follow autonomously. Add a section for every skill that has parameterized operations.",
+    "location": "~/.zeroclaw/workspace/TOOLS.md",
+    "rules": [
+      "Use positional argv syntax in all examples: python3 -u skills/<skill>/wrapper.py <subcommand> <arg1> <arg2>",
+      "Never document KEY=value or env var prefix syntax — blocked by security policy.",
+      "Never document echo >, printf >, or any redirection — also blocked.",
+      "Add an explicit negative rule for any syntax the agent tends to hallucinate from its training (e.g. 'Never use MAIL_TO= syntax').",
+      "For multi-step workflows (e.g. reply = read then send), document them as a numbered sequence and add 'Never skip step 1' to prevent the agent from collapsing steps.",
+      "Keep examples concrete — use realistic placeholder values (a@example.com, 'Subject here') rather than abstract tokens (<ADDR>).",
+      "State which operations use registered skill tools vs shell tool — the agent needs to know which tool to call.",
+      "Restart ZeroClaw after every TOOLS.md edit — the file is read at startup, not on each turn."
+    ],
+    "section_template": "---\n\n## <Skill Name> — <brief identifier e.g. account@provider.com>\n\nOnly `<list_tool_name>` is a registered skill tool. All other operations use the `shell` tool.\nNever use KEY=value env var syntax — blocked by security policy.\n\n**List:**\nCall skill tool `<list_tool_name>` directly.\n\n**Read a single item** (replace ID with value from list output):\n```\npython3 -u skills/<skill>/wrapper.py read <id>\n```\n\n**Create/send:**\n```\npython3 -u skills/<skill>/wrapper.py send recipient@example.com \"Subject here\" \"Body text here\"\n```\nArguments in order: <subcommand> <arg1> <arg2> <arg3>\n\n**Reply/update workflow — always two steps in order:**\n1. `shell`: `python3 -u skills/<skill>/wrapper.py read <id>` — get the sender address and content\n2. `shell`: `python3 -u skills/<skill>/wrapper.py send <sender_from_step_1> \"Re: <subject>\" \"<reply>\"`\nNever attempt step 2 without completing step 1 first."
+  },
+
+  "config_toml_requirements": {
+    "summary": "Minimum config.toml settings required for a Python-wrapper skill to function.",
+    "required_settings": {
+      "allowed_commands": "Must include 'python3'. Also add the CLI tool your wrapper calls (e.g. 'himalaya', 'git', 'curl').",
+      "allowed_roots": "Must include '~/.zeroclaw/workspace'. Without this, /home is blocked by forbidden_paths and any file I/O inside the workspace fails.",
+      "block_high_risk_commands": "Can remain true — python3 positional argv calls are not classified as high risk."
+    },
+    "minimal_autonomy_block": {
+      "level": "full",
+      "workspace_only": true,
+      "allowed_commands": ["python3", "bash", "<your-cli-tool>"],
+      "allowed_roots": ["~/.zeroclaw/workspace"],
+      "forbidden_paths": ["/etc", "/root", "/usr", "/bin", "/sbin", "/lib", "/opt", "/boot", "/dev", "/proc", "/sys", "/var", "/tmp", "~/.ssh", "~/.gnupg", "~/.aws", "~/.config"],
+      "block_high_risk_commands": true,
+      "note": "Do NOT include /home in forbidden_paths. DO include ~/.zeroclaw/workspace in allowed_roots. Both are required for the wrapper to operate inside the workspace."
+    },
+    "after_editing": "Restart ZeroClaw after any config.toml change: kill and relaunch the daemon, or run 'zeroclaw restart'."
+  },
+
+  "file_structure": {
+    "summary": "Complete file layout for a working skill.",
+    "files": {
+      "~/.zeroclaw/workspace/skills/<skill>/wrapper.py": "Python execution engine. Accepts positional sys.argv. Prints STATUS: lines. All logic lives here.",
+      "~/.zeroclaw/workspace/skills/<skill>/SKILL.toml": "Registers the skill. Declares only the zero-arg list tool. No placeholders.",
+      "~/.zeroclaw/workspace/skills/<skill>/SKILL.md": "Human-readable docs for the developer. Not agent-facing.",
+      "~/.zeroclaw/workspace/TOOLS.md": "Agent-facing instructions. One section per skill. Contains exact shell command examples for all parameterized operations. Always injected into system prompt."
+    }
+  },
+
+  "development_workflow": {
+    "steps": [
+      "1. Write wrapper.py with list/read/send subcommands accepting positional argv. Test it manually from the terminal first.",
+      "2. Write SKILL.toml with only the list tool registered. No placeholders.",
+      "3. Write SKILL.md as a developer reference (argv layout, troubleshooting).",
+      "4. Add a section to TOOLS.md with exact shell command examples for all parameterized operations.",
+      "5. Verify config.toml has python3 in allowed_commands and ~/.zeroclaw/workspace in allowed_roots.",
+      "6. Restart ZeroClaw.",
+      "7. Test list operation by calling the registered skill tool directly.",
+      "8. Test read/send by giving the agent a natural language instruction and verifying it constructs the correct shell command from TOOLS.md.",
+      "9. If agent uses wrong syntax, check memory for stale instructions and clear them. Update TOOLS.md negative rules."
+    ]
+  },
+
+  "debugging_checklist": [
+    {"symptom": "Unknown tool: <skill>", "cause": "All [[tools]] blocks removed from SKILL.toml", "fix": "Add back at least one [[tools]] block — even a no-arg list tool is enough to register the skill."},
+    {"symptom": "Tool returns empty output or passes literal '{0}'", "cause": "Placeholder substitution used in SKILL.toml command string", "fix": "Remove all placeholders. Use positional argv via the shell tool instead."},
+    {"symptom": "Command not allowed by security policy (env var prefix)", "cause": "Agent used KEY=value command syntax", "fix": "Add 'Never use KEY=value syntax' to TOOLS.md. Use positional argv only."},
+    {"symptom": "Command not allowed by security policy (redirection)", "cause": "Agent used >, >>, tee, or pipe", "fix": "Add 'Never use redirection' to TOOLS.md. Restructure wrapper to accept all data as argv."},
+    {"symptom": "Agent ignores TOOLS.md and uses wrong syntax", "cause": "Old instructions cached in agent memory from earlier sessions", "fix": "Ask agent to search and delete skill-related memory entries. Restart ZeroClaw."},
+    {"symptom": "shell write succeeds but file not found by wrapper", "cause": "Relative path used — shell tool and skill tool run from different working directories", "fix": "Use os.path.dirname(os.path.abspath(__file__)) in wrapper. Never use relative paths."},
+    {"symptom": "Agent sends with wrong argument order (e.g. ID instead of address)", "cause": "Agent confused read syntax with send syntax", "fix": "Add explicit multi-step reply workflow to TOOLS.md. Add 'Never reply without reading first'."},
+    {"symptom": "Agent says 'I cannot do X, I can only list'", "cause": "TOOLS.md missing the operation, or a previous SKILL.md warning was too restrictive", "fix": "Add the missing operation to TOOLS.md. Remove restrictive wording."},
+    {"symptom": "SKILL.md instructions are ignored by agent", "cause": "SKILL.md is not injected into system prompt automatically — confirmed architecture limitation", "fix": "Move all agent-facing instructions to TOOLS.md. SKILL.md is for human reference only."},
+    {"symptom": "Changes to TOOLS.md not picked up by agent", "cause": "TOOLS.md is read at startup, not dynamically", "fix": "Restart ZeroClaw after every TOOLS.md edit."}
+  ]
+}

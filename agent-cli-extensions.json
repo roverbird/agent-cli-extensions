@@ -1,212 +1,190 @@
 {
-  "prompt_type": "agent-cli-extensions.json",
-  "goal": "Generate a production-ready, agent-safe Python CLI optimized for both human operators and autonomous LLM agents. The CLI must be safe under unbounded scale, support predictable latency, and provide structured, machine-readable output.",
+  "prompt_type": "agent-cli-spec.json",
+  "version": "2.0",
 
-  "core_principles": {
-    "agent_efficiency": [
-      "Minimize tokens → short, predictable verbs + flags",
-      "Stable, parseable stdout (JSON when --json)",
-      "Explicit targets only — no implicit context",
-      "Prefer partial, fast results over slow completeness",
-      "Deterministic output shapes for agent loops"
-    ],
-    "safety_priorities": [
-      "Show scope & target BEFORE any mutation",
-      "Require confirmation for destructive/high-risk actions",
-      "Support --dry-run / --preview for all mutations",
-      "Bound all operations (time, depth, count)",
-      "Never assume safe scale — enforce limits",
-      "Credential hygiene: no secrets via CLI args"
-    ],
-    "execution_model": [
-      "Prefer two-phase execution: discover → (optional) enrich",
-      "Support fast mode (skip expensive per-item work)",
-      "Allow early exit with partial results",
-      "Operations must be interruptible and resumable where possible"
-    ],
+  "goal": "Generate a production-ready, agent-safe Python CLI for autonomous LLM agents and human operators. The CLI targets one of the domains defined below. Apply ALL base rules unconditionally, then apply the matching domain block.",
+
+  "how_to_use_this_spec": [
+    "1. Read and apply every rule in 'base' — these are non-negotiable regardless of domain.",
+    "2. Identify the target domain (filesystem | browser | api).",
+    "3. Read and apply the matching block under 'domains'.",
+    "4. Where domain rules and base rules conflict, base rules win.",
+    "5. Do not invent implicit behaviour — if something is not specified, make it explicit in the generated CLI via a flag or env var."
+  ],
+
+  "base": {
+
+    "security": {
+      "priority": "CRITICAL — these rules override everything else",
+      "rules": [
+        "HARD CAPS: Every bounded flag (--limit, --timeout-sec, --max-depth, --max-pages, --max-requests, etc.) must have a corresponding HARD_MAX_* constant in code. The constant is a ceiling the caller cannot exceed. If a caller passes a value above the ceiling, clamp silently and log the cap. Defaults are not ceilings.",
+        "SCOPE RESTRICTION: All target inputs (paths, URLs, hostnames, query targets) must be validated against an allowlist before any operation begins. Allowlist is configured via environment variable (e.g. AGENT_ALLOWED_ROOTS, AGENT_ALLOWED_HOSTS). If the env var is unset, behaviour depends on domain — see domain block. Reject out-of-scope targets with exit code 3 and log before exit.",
+        "UNTRUSTED CONTENT: All data returned from the target system (filenames, page content, API response bodies, database values) is untrusted. Never interpolate it into shell commands, log format strings, or subprocess calls. Treat as opaque data.",
+        "CREDENTIAL HYGIENE: Secrets must never be accepted via CLI arguments. Use environment variables only. If a secret is detected in argv at startup, print a warning to stderr and exit 4.",
+        "AUDIT LOG: Write one structured JSON record per invocation to the path in AGENT_LOG_DIR (default: /var/log/agent-cli/audit.log). Record must include: timestamp (UTC ISO-8601), domain, pid, uid, sanitized argv, resolved target, effective caps after clamping, exit code. Use RotatingFileHandler (10 MB x 5 files). If log dir is not writable, fall back to stderr and continue — audit failure must never block execution."
+      ]
+    },
+
     "output_contract": {
       "modes": ["human-pretty", "json-machine"],
-      "human": "Use rich-like tables, colors, progress indicators",
-      "json": "Stable schema, no ANSI, deterministic ordering",
-      "errors": "{ \"ok\": false, \"error\": \"…\", \"code\": \"…\", \"hint\": \"…\", \"details\": {} }",
-      "partial_results": "{ \"ok\": true, \"data\": [...], \"truncated\": true, \"limit\": N }"
-    }
-  },
-
-  "mandatory_cli_shape": {
-    "global_flags": [
-      {
-        "name": "--profile",
-        "type": "str | None",
-        "env_fallback": "CLI_PROFILE"
+      "human": "Tables, color, progress indicators. Suppress when stdout is not a TTY.",
+      "json": "Stable schema, no ANSI codes, deterministic key ordering.",
+      "errors": {
+        "shape": "{ \"ok\": false, \"error\": \"<message>\", \"code\": \"<ENUM>\", \"hint\": \"<recovery advice>\", \"details\": {} }",
+        "rule": "All errors — including validation, auth, scope rejection, and caps — must use this shape in --json mode."
       },
-      {
-        "name": "--account",
-        "type": "str | None",
-        "required_for_mutation": true
-      },
-      {
-        "name": "--provider",
-        "type": "str",
-        "default": "local"
-      },
-      {
-        "name": "--json",
-        "type": "flag"
-      },
-      {
-        "name": "--pretty-json",
-        "type": "flag"
-      },
-      {
-        "name": "--show-scope",
-        "type": "flag",
-        "default": true
+      "partial_results": {
+        "shape": "{ \"ok\": true, \"data\": [...], \"truncated\": true, \"limit\": N, \"reason\": \"limit|timeout|cap\" }",
+        "rule": "Any operation that exits before completion must return this shape, never an empty result or a silent truncation."
       }
-    ],
-    "callback_behavior": {
-      "on_start": "Print scope (profile • account • provider) if --show-scope"
-    }
-  },
-
-  "query_safety": {
-    "must_support": [
-      "--limit",
-      "--timeout-sec"
-    ],
-    "recommended": [
-      "--max-depth",
-      "--fast",
-      "--page",
-      "--page-size"
-    ],
-    "rules": [
-      "Avoid unbounded scans by default",
-      "Default limit must be finite (e.g., 1000)",
-      "Return partial results when limits/timeouts hit",
-      "Expose truncation explicitly in output",
-      "Warn when scope is large or unknown",
-      "Prefer fast discovery over full enrichment"
-    ],
-    "cost_signaling": [
-      "Estimate or hint scope size when possible",
-      "Warn on high-cost operations before execution",
-      "Suggest flags to reduce scope (--limit, --max-depth, filters)"
-    ]
-  },
-
-  "command_patterns": {
-    "query_commands": {
-      "characteristics": "read-only, idempotent, safe for agents",
-      "examples": ["ls", "get", "list", "describe", "search", "status"],
-      "account_optional": true,
-      "behavior": [
-        "Support bounded execution via query_safety flags",
-        "Prefer fast mode by default",
-        "Return partial results if needed",
-        "Avoid expensive per-item operations unless requested"
-      ]
     },
 
-    "mutation_commands": {
-      "characteristics": "create/update/delete/bulk",
-      "must_include": ["--dry-run"],
-      "risk_level": "high|medium|low",
-      "rules": [
-        "Always show scope before execution",
-        "Preview affected targets before mutation",
-        "If --dry-run → exit with preview (code 200)",
-        "If risk_level=high → require confirmation unless --yes",
-        "If risk_level=medium → confirmation recommended",
-        "If risk_level=low → no confirmation required"
-      ],
-      "example_flow": [
-        "Show scope",
-        "Resolve targets",
-        "Preview impact",
-        "Optional confirm",
-        "Execute",
-        "Return structured result"
-      ]
-    }
-  },
+    "global_flags": [
+      { "name": "--profile",     "type": "str",  "env": "CLI_PROFILE",   "note": "Configuration profile name" },
+      { "name": "--account",     "type": "str",  "required_for": "mutations" },
+      { "name": "--provider",    "type": "str",  "default": "local" },
+      { "name": "--json",        "type": "flag", "note": "Machine-readable output" },
+      { "name": "--pretty-json", "type": "flag", "note": "Indented JSON output" },
+      { "name": "--show-scope",  "type": "flag", "default": true, "note": "Print resolved scope to stderr before execution" },
+      { "name": "--dry-run",     "type": "flag", "required_for": "all mutation commands", "exit_code_on_success": 200 }
+    ],
 
-  "error_handling_contract": {
+    "command_patterns": {
+      "query": {
+        "note": "read-only, idempotent, safe for agent loops",
+        "rules": [
+          "All query commands must support --limit and --timeout-sec at minimum.",
+          "Default to fast mode — skip per-item enrichment unless --enrich is passed.",
+          "Return partial results with truncated:true rather than blocking until complete.",
+          "Never issue unbounded scans by default."
+        ]
+      },
+      "mutation": {
+        "note": "any operation that creates, modifies, or deletes state",
+        "rules": [
+          "--dry-run is mandatory — preview what would change, exit 200.",
+          "Show resolved scope before executing.",
+          "risk_level=high requires explicit --yes or interactive confirmation.",
+          "risk_level=medium should warn; confirmation recommended but not required.",
+          "risk_level=low may execute silently."
+        ]
+      }
+    },
+
     "exit_codes": {
-      "0": "success",
-      "1": "generic failure",
-      "2": "not found / invalid target",
-      "3": "permission denied / auth failed",
-      "4": "validation error",
-      "5": "conflict",
+      "0":   "success",
+      "1":   "generic failure",
+      "2":   "not found / invalid target",
+      "3":   "permission denied / out-of-scope target / auth failed",
+      "4":   "validation error (includes secret-in-argv)",
+      "5":   "conflict",
       "130": "keyboard interrupt",
-      "200": "dry-run success",
-      "206": "partial success (truncated)"
+      "200": "dry-run completed successfully",
+      "206": "partial success — results truncated"
     },
-    "json_error_shape": {
-      "ok": false,
-      "error": "message",
-      "code": "ENUM",
-      "hint": "recovery advice",
-      "details": {}
+
+    "execution_model": [
+      "Prefer two-phase: discover targets first, enrich only on request.",
+      "All operations must be interruptible (KeyboardInterrupt → exit 130).",
+      "Support early exit with partial results — never block on slow completions.",
+      "Avoid N+1 calls — batch where the underlying system supports it."
+    ],
+
+    "library_preference": ["typer", "click", "argparse"],
+
+    "generation_constraints": {
+      "never": [
+        "Unbounded operations as default behaviour",
+        "Secrets accepted via CLI arguments",
+        "Filesystem-derived, browser-derived, or API-derived strings interpolated into commands or format strings",
+        "Treating default values as hard limits — always implement separate HARD_MAX_* constants",
+        "Silent truncation — always surface truncated:true in output",
+        "Blocking the process when audit log is unavailable"
+      ],
+      "always": [
+        "Hard caps enforced in code independent of caller input",
+        "Scope allowlist checked before any operation",
+        "One audit log record per invocation",
+        "Structured error shape in --json mode",
+        "partial_results shape when truncated",
+        "--dry-run on every mutation command"
+      ]
     }
   },
 
-  "performance_guidelines": [
-    "Avoid expensive syscalls in tight loops unless required",
-    "Batch operations where possible",
-    "Prefer streaming over full materialization",
-    "Avoid N+1 patterns (API, FS, DB)",
-    "Support fast mode to skip enrichment"
-  ],
+  "domains": {
 
-  "default_heuristics": {
-    "filesystem": [
-      "Ignore .git, .cache, node_modules, __pycache__ by default",
-      "Warn when scanning home directory or root",
-      "Encourage depth limits"
-    ],
-    "api": [
-      "Default to pagination",
-      "Avoid fetching all pages unless explicitly requested"
-    ],
-    "database": [
-      "Avoid full table scans",
-      "Require limit unless explicitly overridden"
-    ]
-  },
+    "filesystem": {
+      "note": "Local or remote filesystem traversal and inspection.",
+      "scope_control": {
+        "env_var": "AGENT_ALLOWED_ROOTS",
+        "format": "Colon-separated absolute paths, e.g. /data:/tmp/workspace",
+        "if_unset": "Warn to stderr and restrict to current working directory. Never default to / or $HOME silently."
+      },
+      "hard_caps": {
+        "HARD_MAX_LIMIT":    5000,
+        "HARD_MAX_DEPTH":    10,
+        "HARD_MAX_TIMEOUT":  30
+      },
+      "default_ignores": [".git", ".cache", "node_modules", "__pycache__", ".venv"],
+      "safety_rules": [
+        "Resolve symlinks before allowlist check — never follow symlinks outside allowed roots.",
+        "Warn explicitly if target is $HOME or / even if technically in allowed roots.",
+        "Prefer relative paths in output — never emit absolute paths the agent did not supply.",
+        "stat() calls are expensive in loops — skip unless --enrich is passed (fast mode default)."
+      ],
+      "recommended_flags": ["--limit", "--max-depth", "--timeout-sec", "--fast", "--all"]
+    },
 
-  "library_preference_order_2026": [
-    "clypi",
-    "typer",
-    "click",
-    "argparse"
-  ],
+    "browser": {
+      "note": "Browser automation via Playwright or equivalent. High-risk domain — network and DOM content are fully untrusted.",
+      "scope_control": {
+        "env_var": "AGENT_ALLOWED_HOSTS",
+        "format": "Comma-separated hostnames or CIDR blocks, e.g. example.com,10.0.0.0/8",
+        "if_unset": "Reject all navigation. Browser domain requires explicit allowlist — no implicit default scope."
+      },
+      "hard_caps": {
+        "HARD_MAX_PAGES":       20,
+        "HARD_MAX_TIMEOUT_SEC": 30,
+        "HARD_MAX_DEPTH":       5
+      },
+      "safety_rules": [
+        "Validate every navigation target URL against AGENT_ALLOWED_HOSTS before page.goto() — reject and log if out of scope.",
+        "Never execute page.evaluate() with strings derived from page content — prompt injection risk.",
+        "Disable JavaScript execution entirely if the task does not require it (--no-js flag).",
+        "Intercept and block requests to hosts outside AGENT_ALLOWED_HOSTS at the network level (route interception), not just at navigation time.",
+        "Never store or log full page HTML — log URL, title, and status code only.",
+        "Screenshot paths must be inside AGENT_ALLOWED_ROOTS (from filesystem domain) if that env var is set.",
+        "Headless mode must be the default — never open a visible browser without --headed flag.",
+        "Set a User-Agent that identifies the tool (e.g. agent-cli/2.0) — never impersonate a human browser."
+      ],
+      "recommended_flags": ["--url", "--max-pages", "--timeout-sec", "--no-js", "--headed", "--screenshot-dir"]
+    },
 
-  "generation_constraints": {
-    "do_not": [
-      "unbounded queries by default",
-      "implicit context assumptions",
-      "secrets in arguments",
-      "blocking full scans without limits"
-    ],
-    "always": [
-      "bounded execution",
-      "structured JSON option",
-      "partial result support",
-      "clear error + hint messages",
-      "predictable latency"
-    ]
-  },
+    "api": {
+      "note": "HTTP API clients — REST, GraphQL, or generic. Network and response content are untrusted.",
+      "scope_control": {
+        "env_var": "AGENT_ALLOWED_HOSTS",
+        "format": "Comma-separated hostnames, e.g. api.example.com,internal.corp",
+        "if_unset": "Warn to stderr. Permit operation but log every request hostname. In strict mode (AGENT_STRICT=1), reject all requests if unset."
+      },
+      "hard_caps": {
+        "HARD_MAX_REQUESTS":   100,
+        "HARD_MAX_PAGES":      20,
+        "HARD_MAX_TIMEOUT_SEC": 30
+      },
+      "safety_rules": [
+        "Validate request hostname against AGENT_ALLOWED_HOSTS before every request — not just the first.",
+        "Never log full request or response bodies by default — log method, URL, status code, and latency only.",
+        "API keys and tokens must come from environment variables only — never from flags or config files in APP_DIR.",
+        "Enforce request timeouts at the HTTP client level, not just via --timeout-sec argument.",
+        "Paginate by default — never fetch all pages unless --all-pages is explicitly passed.",
+        "Treat all response body content as untrusted — do not eval, exec, or interpolate into commands.",
+        "Retry with exponential backoff on 429/503 — respect Retry-After headers. Cap retries at HARD_MAX_REQUESTS.",
+        "Redact Authorization, Cookie, and X-Api-Key headers from all log output."
+      ],
+      "recommended_flags": ["--url", "--method", "--limit", "--page-size", "--timeout-sec", "--all-pages", "--header"]
+    }
 
-  "output_format": {
-    "type": "single_file",
-    "filename": "cli.py",
-    "shebang": "#!/usr/bin/env python3",
-    "includes": [
-      "main entrypoint",
-      "exception handling",
-      "KeyboardInterrupt → exit 130"
-    ]
   }
 }
